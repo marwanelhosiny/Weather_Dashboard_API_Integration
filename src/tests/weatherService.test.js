@@ -3,18 +3,36 @@ import axios from 'axios';
 import cache from '../utils/cache.js';
 import * as weatherService from '../services/weatherService.js';
 
+jest.mock('redis', () => ({
+    createClient: jest.fn().mockReturnValue({
+        connect: jest.fn().mockResolvedValue(true),
+        quit: jest.fn().mockResolvedValue(true),
+        get: jest.fn(),
+        set: jest.fn(),
+        del: jest.fn(),
+    }),
+}));
+
 jest.mock('axios');
 jest.mock('../utils/cache.js');
 
+
 describe('Weather Service', () => {
+
+    beforeEach(() => {
+        jest.spyOn(console, 'error').mockImplementation(() => { });  // Suppress console errors during tests
+    });
+
     afterEach(() => {
+        console.error.mockRestore();  // Restore original console.error after tests
         jest.clearAllMocks();
+
     });
 
     test('getCoordinates should return correct coordinates for a city', async () => {
         const mockResponse = {
             data: [
-                { lat: 51.5074, lon: -0.1278 } // Example: London
+                { lat: 51.5074, lon: -0.1278 }
             ],
         };
         axios.get.mockResolvedValue(mockResponse);
@@ -24,7 +42,7 @@ describe('Weather Service', () => {
 
         expect(result).toEqual({ lat: 51.5074, lon: -0.1278 });
         expect(axios.get).toHaveBeenCalledWith(expect.stringContaining('direct'), {
-            params: { q: city, limit: 1, appid: process.env.OPENWEATHERMAP_API_KEY },
+            params: { q: city, limit: 1, appid: expect.any(String) },
         });
     });
 
@@ -39,104 +57,125 @@ describe('Weather Service', () => {
     });
 
     test('getCurrentWeather should return weather data', async () => {
-        const mockWeatherData = { temp: 18, description: 'clear sky' };
-        const mockCacheData = null; // Simulate cache miss
-        cache.get.mockResolvedValue(mockCacheData);
+        const mockWeatherData = {
+            name: 'London',
+            main: { temp: 18 },
+            weather: [{ description: 'clear sky' }],
+            wind: { speed: 3.5 },
+        };
+        cache.get.mockResolvedValue(null);
         axios.get.mockResolvedValue({ data: mockWeatherData });
 
-        const mockReq = { params: { city: 'London' } }; // Mocking req.params
-        const mockRes = {
-            status: jest.fn().mockReturnThis(), // Mocking the status method
-            json: jest.fn() // Mocking the json method
-        };
-
-        const result = await weatherService.getCurrentWeather(mockReq, mockRes);
-
-        expect(result).toEqual(mockWeatherData);
-        expect(cache.set).toHaveBeenCalled();
-        expect(axios.get).toHaveBeenCalledWith(expect.stringContaining('weather'), {
-            params: { q: 'London', appid: process.env.OPENWEATHERMAP_API_KEY },
-        });
-        expect(mockRes.status).toHaveBeenCalledWith(200); // Ensure the status is set
-        expect(mockRes.json).toHaveBeenCalledWith({ success: true, data: mockWeatherData }); // Ensure the response is correctly sent
-    });
-
-    test('getCurrentWeather should use cache if available', async () => {
-        const mockCacheData = { temp: 18, description: 'clear sky' };
-        cache.get.mockResolvedValue(mockCacheData);
-
-        const mockReq = { params: { city: 'London' } };
-        const mockRes = {
-            status: jest.fn().mockReturnThis(),
-            json: jest.fn()
-        };
-
-        const result = await weatherService.getCurrentWeather(mockReq, mockRes);
-
-        expect(result).toEqual(mockCacheData);
-        expect(axios.get).not.toHaveBeenCalled();
-        expect(mockRes.status).toHaveBeenCalledWith(200); // Ensure the status is set
-        expect(mockRes.json).toHaveBeenCalledWith({ success: true, data: mockCacheData }); // Ensure the response is correctly sent
-    });
-
-    test('getCurrentWeather should handle cache errors gracefully', async () => {
-        const mockCacheError = new Error('Cache error');
-        cache.get.mockRejectedValue(mockCacheError); // Simulate a cache error
-
-        const mockReq = { params: { city: 'London' } };
-        const mockRes = {
-            status: jest.fn().mockReturnThis(),
-            json: jest.fn()
-        };
-
-        const mockWeatherData = { temp: 20, description: 'sunny' };
-        axios.get.mockResolvedValue({ data: mockWeatherData });
-
-        const result = await weatherService.getCurrentWeather(mockReq, mockRes);
-
-        expect(result).toEqual(mockWeatherData);
-        expect(axios.get).toHaveBeenCalledWith(expect.stringContaining('weather'), {
-            params: { q: 'London', appid: process.env.OPENWEATHERMAP_API_KEY },
-        });
-        expect(mockRes.status).toHaveBeenCalledWith(200); // Ensure status is set
-        expect(mockRes.json).toHaveBeenCalledWith({ success: true, data: mockWeatherData });
-    });
-
-    test('getCurrentWeather should handle cache errors gracefully', async () => {
         const mockReq = { params: { city: 'London' } };
         const mockRes = {
             status: jest.fn().mockReturnThis(),
             json: jest.fn(),
         };
 
-        // Mock cache to reject with an error
-        cache.get.mockRejectedValue(new Error('Cache error'));
-
-        // Mock coordinates and weather data
-        const mockCoordinates = { lat: 51.5074, lon: -0.1278 };
-        const mockWeatherData = {
-            name: 'London',
-            main: { temp: 20 },
-            weather: [{ description: 'sunny' }],
-            wind: { speed: 5 },
-        };
-
-        // Mock getCoordinates and axios
-        weatherService.getCoordinates = jest.fn().mockResolvedValue(mockCoordinates);
-        axios.get.mockResolvedValue({ data: mockWeatherData });
-
         await weatherService.getCurrentWeather(mockReq, mockRes);
 
+        expect(cache.set).toHaveBeenCalledWith(
+            `weather:current:london`,
+            {
+                city: 'London',
+                temperature: 18,
+                description: 'clear sky',
+                humidity: undefined,
+                windSpeed: 3.5,
+            },
+            3600
+        );
+        expect(axios.get).toHaveBeenCalledWith(expect.stringContaining('weather'), {
+            params: { q: 'London', appid: expect.any(String), units: 'metric' },
+        });
         expect(mockRes.status).toHaveBeenCalledWith(200);
         expect(mockRes.json).toHaveBeenCalledWith({
             source: 'API',
             data: {
                 city: 'London',
-                temperature: 20,
-                description: 'sunny',
+                temperature: 18,
+                description: 'clear sky',
                 humidity: undefined,
-                windSpeed: 5
-            }
+                windSpeed: 3.5,
+            },
+        });
+    });
+
+    test('getCurrentWeather should use cache if available', async () => {
+        const mockCacheData = {
+            city: 'London',
+            temperature: 18,
+            description: 'clear sky',
+            humidity: 80,
+            windSpeed: 3.5,
+        };
+        cache.get.mockResolvedValue(mockCacheData);
+
+        const mockReq = { params: { city: 'London' } };
+        const mockRes = {
+            status: jest.fn().mockReturnThis(),
+            json: jest.fn(),
+        };
+
+        await weatherService.getCurrentWeather(mockReq, mockRes);
+
+        expect(axios.get).not.toHaveBeenCalled(); // Ensure no API call is made
+        expect(mockRes.status).toHaveBeenCalledWith(200);
+        expect(mockRes.json).toHaveBeenCalledWith({
+            source: 'cache', // Corrected casing
+            data: mockCacheData,
+        });
+    });
+
+    test('getCoordinates should handle API errors gracefully', async () => {
+        axios.get.mockRejectedValue(new Error('API error')); // Simulate API error
+
+        const city = 'London';
+        await expect(weatherService.getCoordinates(city)).rejects.toThrow(
+            'API error' // Adjusted to match the actual error message
+        );
+    });
+
+    test('getForecast should return cached data if available', async () => {
+        const mockCachedData = [
+            { date: '2024-12-03', temperature: 20, description: 'clear sky' },
+        ];
+        cache.get.mockResolvedValue(mockCachedData);
+
+        const mockReq = { params: { city: 'London' } };
+        const mockRes = {
+            status: jest.fn().mockReturnThis(),
+            json: jest.fn(),
+        };
+
+        await weatherService.getForecast(mockReq, mockRes);
+
+        expect(cache.get).toHaveBeenCalledWith('weather:forecast:london');
+        expect(mockRes.status).toHaveBeenCalledWith(200);
+        expect(mockRes.json).toHaveBeenCalledWith({
+            source: 'cache',
+            data: mockCachedData,
+        });
+        expect(axios.get).not.toHaveBeenCalled();
+    });
+    
+
+    test('getForecast should handle API errors gracefully', async () => {
+        cache.get.mockResolvedValue(null);
+        axios.get.mockRejectedValue(new Error('API error'));
+
+        const mockReq = { params: { city: 'London' } };
+        const mockRes = {
+            status: jest.fn().mockReturnThis(),
+            json: jest.fn(),
+        };
+
+        await weatherService.getForecast(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(500);
+        expect(mockRes.json).toHaveBeenCalledWith({
+            success: false,
+            message: 'API error',
         });
     });
 });

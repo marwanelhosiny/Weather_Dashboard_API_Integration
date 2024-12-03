@@ -44,7 +44,7 @@ export const getCurrentWeather = async (req, res) => {
 
     try {
         // Check cache
-        const cachedData = await cache.get(cacheKey);
+        const cachedData = await cache.get(cacheKey).catch(() => null);
         if (cachedData) {
             return res.status(200).json({ source: 'cache', data: cachedData });
         }
@@ -89,6 +89,7 @@ export const getForecast = async (req, res) => {
             return res.status(200).json({ source: 'cache', data: cachedData });
         }
 
+
         // Get coordinates
         const { lat, lon } = await getCoordinates(city);
 
@@ -102,20 +103,44 @@ export const getForecast = async (req, res) => {
             },
         });
 
-        const forecastData = response.data.list.map((item) => ({
-            date: item.dt_txt.split(' ')[0],
-            temperature: item.main.temp,
-            description: item.weather[0].description,
+
+
+        // Data transformation
+        const forecastData = response.data.list.reduce((acc, item) => {
+            const date = item.dt_txt.split(' ')[0];
+            if (!acc[date]) {
+                acc[date] = {
+                    date,
+                    temperatures: [],
+                    descriptions: []
+                };
+            }
+            acc[date].temperatures.push(item.main.temp);
+            acc[date].descriptions.push(item.weather[0].description);
+            return acc;
+        }, {});
+
+
+
+        // Process forecast data
+        const processedForecastData = Object.values(forecastData).map(({ date, temperatures, descriptions }) => ({
+            date,
+            temperature: parseFloat((temperatures.reduce((sum, t) => sum + t, 0) / temperatures.length).toFixed(2)),
+            description: Array.from(new Set(descriptions))[0] // First unique description
         }));
 
-        // Cache the result for 1 hour
-        await cache.set(cacheKey, forecastData, 3600);
 
-        return res.status(200).json({ source: 'API', data: forecastData });
+
+        // Cache the result for 1 hour
+        await cache.set(cacheKey, processedForecastData, 3600);
+
+        // Return the processed forecast data
+        return res.status(200).json({ source: 'API', data: processedForecastData });
     } catch (error) {
         handleWeatherApiError(res, error);
     }
 };
+
 
 /**
  * Handle errors for weather API requests
@@ -123,7 +148,6 @@ export const getForecast = async (req, res) => {
  * @param {Error} error - Error object
  */
 const handleWeatherApiError = (res, error) => {
-    console.error("Weather API Error:", error.message);
     const statusCode = error.cause || 500;
     res.status(statusCode).json({
         success: false,
